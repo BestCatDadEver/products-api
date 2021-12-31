@@ -3,7 +3,7 @@ package com.productapi.product.model
 import javax.persistence.Column
 import javax.persistence.Entity
 
-@Entity(name = "Products")
+
 data class Product(
 
     @Column

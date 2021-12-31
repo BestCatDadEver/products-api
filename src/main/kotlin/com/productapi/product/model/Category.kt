@@ -1,13 +1,18 @@
 package com.productapi.product.model
 
+
+import org.springframework.boot.context.properties.bind.Name
 import javax.persistence.Column
 import javax.persistence.Entity
 import javax.persistence.Id
+import javax.persistence.Table
 
-@Entity(name = "Categories")
+@Entity
+@Table(name = "Categories" )
 data class Category(
 
     @Id
-    private val categoryId : Int = 0,
-    @Column
-    private val categoryName : String = "")
+    @Column(name = "category_id")
+    private val categoryId : Int,
+    @Column(name = "category_name")
+    private val categoryName : String)
