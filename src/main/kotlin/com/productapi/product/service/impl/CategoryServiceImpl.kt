@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service
 @Service
 class CategoryServiceImpl : GenericApiImpl<Category, Int>(), CategoryService {
 
-
     @Autowired
     lateinit var categoryRepository: CategoryRepository
 
