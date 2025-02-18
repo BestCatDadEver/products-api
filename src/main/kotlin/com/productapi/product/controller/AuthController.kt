@@ -42,6 +42,7 @@ class AuthController {
             val roleName = registrationRequest["roleName"] ?: return badRequest("Role Name is required")
             val isActiveStr = registrationRequest["isActive"] ?: "true" // Default to true
 
+            // 1. Validate inputs (more robust)
             if (username.isBlank() || password.isBlank() || email.isBlank() || roleName.isBlank()) {
                 return badRequest("All required fields are required.")
             }
@@ -63,9 +64,11 @@ class AuthController {
             }
 
 
+            // 2. Hash the password using BCrypt
             val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
 
             val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?"
+            // 3. Call the stored procedure, passing the hashed password
             val result = jdbcTemplate.update(
                 sql,
                 username,
@@ -74,15 +77,12 @@ class AuthController {
                 email,
                 firstName,
                 lastName,
-                isActive,
-                roleName
+                roleName,
+                isActive
             )
 
-            println("Executing SQL: $sql with parameters: $username, " +
-                    "$email, $hashedPassword, $dateOfBirth, $firstName, $lastName, $isActive, $roleName")
 
-
-            if (result > 0) {
+            if (result == -1) {
                 return ResponseEntity.ok("User registered successfully.")
             } else {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Registration failed.")
@@ -101,31 +101,40 @@ class AuthController {
             val password = loginRequest["password"] // Get plaintext password
 
             // 1. Hash the password using BCrypt
-            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt())
+            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray() // Hash and convert to ByteArray
 
-            // 2. Call the stored procedure, passing the hashed password
+            // 2. Call the stored procedure
             val user = jdbcTemplate.queryForObject(
                 "EXEC LoginUser ?, ?",
-                arrayOf(username, hashedPassword.toByteArray()), // Pass the hashed password as a byte array
+                arrayOf(username, hashedPassword), // Pass the hashed password
                 { rs, _ ->
-                    User( // Assuming 'User' is your data class
-                        id = rs.getLong("UserID"),
-                        username = rs.getString("Username"),
-                        dateOfBirth = rs.getDate("DateOfBirth")?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate(),
-                        email = rs.getString("Email"),
-                        firstName = rs.getString("FirstName"),
-                        lastName = rs.getString("LastName"),
-                        passwordHash = rs.getBytes("passwordHash"),
-                        roles = mutableListOf() // Initialize roles if needed
-                    )
+                    val storedPasswordHash = rs.getBytes("passwordHash") // Get the stored password hash as a byte array
+
+                    if (storedPasswordHash != null && hashedPassword.contentEquals(storedPasswordHash)) { // Compare the hashes
+                        User(
+                            id = rs.getLong("UserID"),
+                            username = rs.getString("Username"),
+                            passwordHash = storedPasswordHash,  // Store the actual hash
+                            dateOfBirth = rs.getDate("DateOfBirth")?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate(),
+                            email = rs.getString("Email"),
+                            firstName = rs.getString("FirstName"),
+                            lastName = rs.getString("LastName"),
+                            roles = mutableListOf() // Initialize roles if needed
+                        )
+                    } else {
+                        null // Return null if password does not match or user is not found
+                    }
                 }
             )
 
-            val token = user?.let { jwtUtil.generateJwtToken(it) } // Generate JWT token
+            if (user != null) {
+                val token = jwtUtil.generateJwtToken(user) // Generate JWT token
+                return ResponseEntity.ok(mapOf("token" to token))
+            } else {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
+            }
 
-            return ResponseEntity.ok(mapOf("token" to token))
-
-        } catch (e: EmptyResultDataAccessException) {
+        } catch (e: EmptyResultDataAccessException) { // This will catch if the user is not found
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
         } catch (e: DataAccessException) {
             e.printStackTrace()
