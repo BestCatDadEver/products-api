@@ -20,12 +20,13 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {  // This is the method
-        http.authorizeHttpRequests((authz) -> authz
-                        .mvcMatchers("/api/auth/**").permitAll() // Allow /api/auth without auth
-                        .anyRequest().authenticated() // All other requests need auth
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+                .authorizeHttpRequests(authorize -> authorize
+                        .antMatchers("/api/auth/register").permitAll() // Use antMatchers for REST APIs
+                        .anyRequest().authenticated()
                 )
-                .csrf().disable(); // Disable CSRF (usually for APIs)
+                .csrf(csrf -> csrf.disable()); // Use lambda syntax for CSRF
 
         return http.build();
     }

@@ -1,13 +1,17 @@
 package com.productapi.product.controller
 
 import com.productapi.product.model.User
+import com.productapi.product.service.api.signup.SignupResponse
+import com.productapi.product.util.ApiGenericResponse
+import com.productapi.product.util.AuthTokenFilter
 import com.productapi.product.util.JwtUtil
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.dao.DataAccessException
 import org.springframework.dao.EmptyResultDataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.jdbc.core.JdbcTemplate  // For calling stored procedures
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.security.crypto.bcrypt.BCrypt
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.*
@@ -15,6 +19,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import java.util.*
 
 @RestController
 @RequestMapping("/api/auth")
@@ -29,9 +34,11 @@ class AuthController {
     @Autowired
     private lateinit var jwtUtil: JwtUtil
 
+    private val logger = LoggerFactory.getLogger(AuthTokenFilter::class.java)
+
 
     @PostMapping("/register")
-    fun registerUser(@RequestBody registrationRequest: Map<String, String>): ResponseEntity<*> {
+    fun registerUser(@RequestBody registrationRequest: Map<String, String>): ResponseEntity<ApiGenericResponse<SignupResponse>> {
         try {
             val username = registrationRequest["username"]?.trim() ?: return badRequest("Username is required")
             val password = registrationRequest["password"] ?: return badRequest("Password is required")
@@ -42,7 +49,6 @@ class AuthController {
             val roleName = registrationRequest["roleName"] ?: return badRequest("Role Name is required")
             val isActiveStr = registrationRequest["isActive"] ?: "true" // Default to true
 
-            // 1. Validate inputs (more robust)
             if (username.isBlank() || password.isBlank() || email.isBlank() || roleName.isBlank()) {
                 return badRequest("All required fields are required.")
             }
@@ -52,7 +58,7 @@ class AuthController {
             }
 
             val dateOfBirth: LocalDate = try {
-                LocalDate.parse(dateOfBirthStr, DateTimeFormatter.ofPattern("yyyy-MM-dd")) // ISO 8601 format
+                LocalDate.parse(dateOfBirthStr, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
             } catch (e: DateTimeParseException) {
                 return badRequest("Invalid date format. Use YYYY-MM-DD.")
             }
@@ -63,12 +69,9 @@ class AuthController {
                 return badRequest("Invalid isActive value. Use true or false.")
             }
 
-
-            // 2. Hash the password using BCrypt
             val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
 
-            val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?"
-            // 3. Call the stored procedure, passing the hashed password
+            val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?" // Assuming stored procedure
             val result = jdbcTemplate.update(
                 sql,
                 username,
@@ -81,40 +84,40 @@ class AuthController {
                 isActive
             )
 
-
-            if (result == -1) {
-                return ResponseEntity.ok("User registered successfully.")
+            return if (result == -1) {
+                val registrationData = SignupResponse(userName = username)
+                val response = ApiGenericResponse(success = true, message = "User registered successfully.", data = registrationData)
+                ResponseEntity.ok(response)
             } else {
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Registration failed.")
+                val response = ApiGenericResponse<SignupResponse>(success = false, message = "Registration failed.", errorCode = 1002, code = "REG_FAIL")
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response)
             }
 
         } catch (e: Exception) {
-            e.printStackTrace() // Log the exception for debugging
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Registration failed: ${e.message}")
+            e.printStackTrace()
+            return internalServerError("An unexpected error occurred during registration.")
         }
     }
 
     @PostMapping("/login")
     fun loginUser(@RequestBody loginRequest: Map<String, String>): ResponseEntity<*> {
         try {
-            val username = loginRequest["username"]
-            val password = loginRequest["password"] // Get plaintext password
+            val username = loginRequest["username"] ?: return ResponseEntity.badRequest().body("Username is required")
+            val password = loginRequest["password"] ?: return ResponseEntity.badRequest().body("Password is required")
 
-            // 1. Hash the password using BCrypt
-            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray() // Hash and convert to ByteArray
+            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
 
-            // 2. Call the stored procedure
             val user = jdbcTemplate.queryForObject(
-                "EXEC LoginUser ?, ?",
-                arrayOf(username, hashedPassword), // Pass the hashed password
+                "EXEC LoginUser ?, ?", // Your stored procedure call
+                arrayOf(username, hashedPassword),
                 { rs, _ ->
-                    val storedPasswordHash = rs.getBytes("passwordHash") // Get the stored password hash as a byte array
+                    val storedPasswordHash = rs.getBytes("PasswordHash")
 
-                    if (storedPasswordHash != null && hashedPassword.contentEquals(storedPasswordHash)) { // Compare the hashes
-                        User(
+                    if (storedPasswordHash != null && Arrays.equals(hashedPassword, storedPasswordHash)) {
+                        User( // Assuming User is your data class
                             id = rs.getLong("UserID"),
                             username = rs.getString("Username"),
-                            passwordHash = storedPasswordHash,  // Store the actual hash
+                            passwordHash = storedPasswordHash,
                             dateOfBirth = rs.getDate("DateOfBirth")?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate(),
                             email = rs.getString("Email"),
                             firstName = rs.getString("FirstName"),
@@ -122,32 +125,35 @@ class AuthController {
                             roles = mutableListOf() // Initialize roles if needed
                         )
                     } else {
-                        null // Return null if password does not match or user is not found
+                        null
                     }
                 }
             )
 
             if (user != null) {
-                val token = jwtUtil.generateJwtToken(user) // Generate JWT token
+                val token = jwtUtil.generateJwtToken(user)
                 return ResponseEntity.ok(mapOf("token" to token))
             } else {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
             }
 
-        } catch (e: EmptyResultDataAccessException) { // This will catch if the user is not found
+        } catch (e: EmptyResultDataAccessException) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
         } catch (e: DataAccessException) {
-            e.printStackTrace()
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Login failed: ${e.message}")
         } catch (e: Exception) {
-            e.printStackTrace()
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Login failed: ${e.message}")
         }
     }
 
+    private fun badRequest(message: String): ResponseEntity<ApiGenericResponse<SignupResponse>> {
+        val response = ApiGenericResponse<SignupResponse>(success = false, message = message, errorCode = 400, code = "BAD_REQUEST")
+        return ResponseEntity.badRequest().body(response)
+    }
 
-    private fun badRequest(message: String): ResponseEntity<String> {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(message)
+    private fun internalServerError(message: String): ResponseEntity<ApiGenericResponse<SignupResponse>> {
+        val response = ApiGenericResponse<SignupResponse>(success = false, message = message, errorCode = 500, code = "INTERNAL_SERVER_ERROR")
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response)
     }
 
     private fun isValidEmail(email: String): Boolean {
