@@ -1,6 +1,8 @@
 package com.productapi.product.controller
 
+import com.productapi.product.model.Role
 import com.productapi.product.model.User
+import com.productapi.product.service.api.login.LoginResponse
 import com.productapi.product.service.api.signup.SignupResponse
 import com.productapi.product.util.ApiGenericResponse
 import com.productapi.product.util.AuthTokenFilter
@@ -11,15 +13,16 @@ import org.springframework.dao.DataAccessException
 import org.springframework.dao.EmptyResultDataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.jdbc.core.ConnectionCallback
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.security.crypto.bcrypt.BCrypt
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.*
+import java.sql.CallableStatement
+import java.sql.ResultSet
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
-import java.util.*
 
 @RestController
 @RequestMapping("/api/auth")
@@ -69,13 +72,13 @@ class AuthController {
                 return badRequest("Invalid isActive value. Use true or false.")
             }
 
-            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
+            //val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
 
             val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?" // Assuming stored procedure
             val result = jdbcTemplate.update(
                 sql,
                 username,
-                hashedPassword,
+                password,
                 java.sql.Date.valueOf(dateOfBirth),
                 email,
                 firstName,
@@ -99,50 +102,88 @@ class AuthController {
         }
     }
 
+
+    @GetMapping("/test-login") // Temporary test endpoint
+    fun testLogin(): String {
+        return "Login test successful"
+    }
+
     @PostMapping("/login")
-    fun loginUser(@RequestBody loginRequest: Map<String, String>): ResponseEntity<*> {
+    fun loginUser(@RequestBody loginRequest: Map<String, String>): ResponseEntity<ApiGenericResponse<LoginResponse>> {
+        val username = loginRequest["username"]?.trim() ?: return ResponseEntity.badRequest().body(
+            ApiGenericResponse(success = false, message = "Username is required")
+        )
+        val password = loginRequest["password"]?.trim() ?: return ResponseEntity.badRequest().body(
+            ApiGenericResponse(success = false, message = "Password is required")
+        )
+
+        logger.info("Login attempt for user: $username")
+
         try {
-            val username = loginRequest["username"] ?: return ResponseEntity.badRequest().body("Username is required")
-            val password = loginRequest["password"] ?: return ResponseEntity.badRequest().body("Password is required")
+            val users = jdbcTemplate.execute(ConnectionCallback<List<User>> { connection ->
+                val cs: CallableStatement = connection.prepareCall("{call LoginUser(?, ?)}") // Or your stored procedure call
+                cs.setString(1, username)
+                cs.setString(2, password)
+                val rs: ResultSet? = cs.executeQuery()
 
-            val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
+                val userList = mutableListOf<User>()
+                if (rs != null) {
+                    while (rs.next()) {
+                        logger.info("User found in database: ${rs.getString("Username")}")
 
-            val user = jdbcTemplate.queryForObject(
-                "EXEC LoginUser ?, ?", // Your stored procedure call
-                arrayOf(username, hashedPassword),
-                { rs, _ ->
-                    val storedPasswordHash = rs.getBytes("PasswordHash")
-
-                    if (storedPasswordHash != null && Arrays.equals(hashedPassword, storedPasswordHash)) {
-                        User( // Assuming User is your data class
-                            id = rs.getLong("UserID"),
-                            username = rs.getString("Username"),
-                            passwordHash = storedPasswordHash,
-                            dateOfBirth = rs.getDate("DateOfBirth")?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate(),
-                            email = rs.getString("Email"),
-                            firstName = rs.getString("FirstName"),
-                            lastName = rs.getString("LastName"),
-                            roles = mutableListOf() // Initialize roles if needed
+                        userList.add(
+                            User(
+                                id = rs.getLong("UserID"),
+                                username = rs.getString("Username"),
+                                dateOfBirth = null,
+                                email = rs.getString("Email"),
+                                firstName = rs.getString("FirstName"),
+                                lastName = rs.getString("LastName"),
+                                role = Role(roleName = rs.getString("RoleName")),
+                                passwordHash = rs.getBytes("PasswordHash"),
+                                isActive = rs.getBoolean("IsActive")
+                            )
                         )
-                    } else {
-                        null
                     }
+                    rs.close()
                 }
-            )
+                cs.close()
+                userList
+            })
 
-            if (user != null) {
+            if (users?.isNotEmpty() == true) { // Safe null check
+                val user = users[0]
+                logger.info("User found: ${user.username}")
+
                 val token = jwtUtil.generateJwtToken(user)
-                return ResponseEntity.ok(mapOf("token" to token))
+                val loginResponse = user.role?.let { role: Role ->
+                    LoginResponse(
+                        token = token,
+                        userName = user.username,
+                        firstName = user.firstName,
+                        lastName = user.lastName,
+                        isActive = user.isActive,
+                        role = role
+                    )
+                }
+                return ResponseEntity.ok(ApiGenericResponse(success = true, data = loginResponse))
             } else {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
+                logger.info("Invalid username or password for user: $username")
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(
+                    ApiGenericResponse(success = false, message = "Invalid username or password.", errorCode = 401)
+                )
             }
 
-        } catch (e: EmptyResultDataAccessException) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid username or password.")
         } catch (e: DataAccessException) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Login failed: ${e.message}")
+            logger.error("Database error during login for user: $username", e)
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
+                ApiGenericResponse(success = false, message = "Login failed: ${e.message}", errorCode = 500)
+            )
         } catch (e: Exception) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Login failed: ${e.message}")
+            logger.error("General error during login for user: $username", e)
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
+                ApiGenericResponse(success = false, message = "Login failed: ${e.message}", errorCode = 500)
+            )
         }
     }
 
