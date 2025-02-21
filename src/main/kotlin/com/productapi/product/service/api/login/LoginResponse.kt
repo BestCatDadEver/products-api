@@ -8,5 +8,5 @@ data class LoginResponse(
     val firstName: String,
     val lastName: String,
     val isActive: Boolean,
-    val role: Role
+    val roleName: String
 )

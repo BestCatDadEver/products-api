@@ -10,17 +10,14 @@ import com.productapi.product.util.JwtUtil
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.dao.DataAccessException
-import org.springframework.dao.EmptyResultDataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.jdbc.core.ConnectionCallback
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.*
 import java.sql.CallableStatement
 import java.sql.ResultSet
 import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 
@@ -29,10 +26,7 @@ import java.time.format.DateTimeParseException
 class AuthController {
 
     @Autowired
-    private lateinit var jdbcTemplate: JdbcTemplate // Inject JdbcTemplate
-
-    @Autowired
-    private lateinit var passwordEncoder: PasswordEncoder
+    private lateinit var jdbcTemplate: JdbcTemplate
 
     @Autowired
     private lateinit var jwtUtil: JwtUtil
@@ -72,9 +66,8 @@ class AuthController {
                 return badRequest("Invalid isActive value. Use true or false.")
             }
 
-            //val hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt()).toByteArray()
 
-            val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?" // Assuming stored procedure
+            val sql = "EXEC RegisterUser ?, ?, ?, ?, ?, ?, ?, ?"
             val result = jdbcTemplate.update(
                 sql,
                 username,
@@ -103,9 +96,9 @@ class AuthController {
     }
 
 
-    @GetMapping("/test-login") // Temporary test endpoint
-    fun testLogin(): String {
-        return "Login test successful"
+    @GetMapping("/health")
+    fun health(): String {
+        return "Service is running"
     }
 
     @PostMapping("/login")
@@ -117,11 +110,9 @@ class AuthController {
             ApiGenericResponse(success = false, message = "Password is required")
         )
 
-        logger.info("Login attempt for user: $username")
-
         try {
             val users = jdbcTemplate.execute(ConnectionCallback<List<User>> { connection ->
-                val cs: CallableStatement = connection.prepareCall("{call LoginUser(?, ?)}") // Or your stored procedure call
+                val cs: CallableStatement = connection.prepareCall("{call LoginUser(?, ?)}")
                 cs.setString(1, username)
                 cs.setString(2, password)
                 val rs: ResultSet? = cs.executeQuery()
@@ -151,7 +142,7 @@ class AuthController {
                 userList
             })
 
-            if (users?.isNotEmpty() == true) { // Safe null check
+            if (users?.isNotEmpty() == true) {
                 val user = users[0]
                 logger.info("User found: ${user.username}")
 
@@ -163,7 +154,7 @@ class AuthController {
                         firstName = user.firstName,
                         lastName = user.lastName,
                         isActive = user.isActive,
-                        role = role
+                        roleName = role.roleName
                     )
                 }
                 return ResponseEntity.ok(ApiGenericResponse(success = true, data = loginResponse))
